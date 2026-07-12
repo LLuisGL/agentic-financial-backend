@@ -7,18 +7,44 @@ import re
 import os
 from urllib.request import Request as UrlRequest, urlopen
 
+from dotenv import load_dotenv
+
+from app.database import get_db, init_db
+from app.routers import casos, clientes
+from app.seed_data import seed_if_empty
+
+load_dotenv()
+
 app = FastAPI()
+
+app.include_router(clientes.router)
+app.include_router(casos.router)
+
+
+@app.on_event("startup")
+def on_startup():
+    init_db()
+    db = next(get_db())
+    try:
+        seed_if_empty(db)
+    finally:
+        db.close()
+
 
 # Usa una API key válida de https://aistudio.google.com/apikey
 genai.configure(api_key=os.getenv("GENAI_APIKEY"))
 model = genai.GenerativeModel("models/gemini-3.5-flash")
 
 PROMPT_NOTA_CREDITO = """
-Eres un extractor de datos de notas de crédito (Ecuador / Latinoamérica).
+Eres un extractor de datos de notas de crédito tributarias (Ecuador / Latinoamérica).
 
 Analiza el PDF adjunto y extrae SOLO estos campos:
-- ruc: número de RUC del emisor o del cliente según aparezca claramente (solo dígitos, sin guiones ni espacios).
+- ruc: número de RUC o cédula del titular (solo dígitos, sin guiones ni espacios).
+- titular: nombre o razón social del titular de la nota.
+- numero_titulo: número del título o de la nota de crédito, si aparece.
+- tipo_nota: tipo de nota si se puede inferir (NCD = Nota de Crédito Desmaterializada, ISD, NCE = Nota de Crédito de Excepción). Si no es claro, usa null.
 - valor_nominal: monto principal / valor nominal / total de la nota (número decimal, sin símbolo de moneda ni separadores de miles; usa punto como decimal).
+- saldo_disponible: saldo disponible de la nota si aparece explícito; si no, usa el mismo valor_nominal.
 - estado: estado del documento si aparece (ej. ACTIVO, ANULADO, PAGADO, PENDIENTE, VIGENTE). Si no hay estado explícito, usa null.
 
 Reglas:
@@ -29,7 +55,11 @@ Reglas:
 Formato exacto:
 {
   "ruc": "1790000000001",
+  "titular": "Comercial Andina S.A.",
+  "numero_titulo": "NCD-2024-000123",
+  "tipo_nota": "NCD",
   "valor_nominal": 1500.50,
+  "saldo_disponible": 1500.50,
   "estado": "ACTIVO"
 }
 """
@@ -56,7 +86,16 @@ def parsear_json_gemini(texto: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    return {"ruc": None, "valor_nominal": None, "estado": None, "raw": texto}
+    return {
+        "ruc": None,
+        "titular": None,
+        "numero_titulo": None,
+        "tipo_nota": None,
+        "valor_nominal": None,
+        "saldo_disponible": None,
+        "estado": None,
+        "raw": texto,
+    }
 
 @app.get("/health")
 async def health_check():
@@ -124,10 +163,14 @@ async def procesar_nota(request: Request):
             "mensaje": "Análisis finalizado correctamente.",
             "datos": datos,
             "ruc": datos.get("ruc"),
+            "titular": datos.get("titular"),
+            "numero_titulo": datos.get("numero_titulo"),
+            "tipo_nota": datos.get("tipo_nota"),
             "valor_nominal": datos.get("valor_nominal"),
+            "saldo_disponible": datos.get("saldo_disponible"),
             "estado": datos.get("estado"),
             "url_pdf": file_url,
-            "accion_sugerida": "Revisar datos extraídos y proceder a negociación.",
+            "accion_sugerida": "Revisar/editar los datos extraídos y confirmarlos con POST /clientes/buscar (antecedentes) y luego POST /casos (crear expediente).",
         }
         print("RESPUESTA A JELOU:", body, flush=True)
         return JSONResponse(content=body)
@@ -144,4 +187,3 @@ async def procesar_nota(request: Request):
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
