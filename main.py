@@ -1,0 +1,144 @@
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+import uvicorn
+import google.generativeai as genai
+import json
+import re
+import os
+from urllib.request import Request as UrlRequest, urlopen
+
+app = FastAPI()
+
+# Usa una API key válida de https://aistudio.google.com/apikey
+genai.configure(api_key=os.getenv("GENAI_APIKEY"))
+model = genai.GenerativeModel("models/gemini-3.5-flash")
+
+PROMPT_NOTA_CREDITO = """
+Eres un extractor de datos de notas de crédito (Ecuador / Latinoamérica).
+
+Analiza el PDF adjunto y extrae SOLO estos campos:
+- ruc: número de RUC del emisor o del cliente según aparezca claramente (solo dígitos, sin guiones ni espacios).
+- valor_nominal: monto principal / valor nominal / total de la nota (número decimal, sin símbolo de moneda ni separadores de miles; usa punto como decimal).
+- estado: estado del documento si aparece (ej. ACTIVO, ANULADO, PAGADO, PENDIENTE, VIGENTE). Si no hay estado explícito, usa null.
+
+Reglas:
+1. Responde ÚNICAMENTE con un JSON válido, sin markdown ni texto extra.
+2. Si un campo no se puede leer con certeza, usa null.
+3. No inventes datos.
+
+Formato exacto:
+{
+  "ruc": "1790000000001",
+  "valor_nominal": 1500.50,
+  "estado": "ACTIVO"
+}
+"""
+
+
+def descargar_pdf(url: str) -> tuple[bytes, str | None]:
+    req = UrlRequest(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urlopen(req, timeout=60) as resp:
+        return resp.read(), resp.headers.get("Content-Type")
+
+
+def parsear_json_gemini(texto: str) -> dict:
+    """Extrae JSON aunque Gemini lo envuelva en ```json ... ```."""
+    texto = (texto or "").strip()
+    try:
+        return json.loads(texto)
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r"\{[\s\S]*\}", texto)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    return {"ruc": None, "valor_nominal": None, "estado": None, "raw": texto}
+
+
+@app.post("/webhook")
+async def procesar_nota(request: Request):
+    data = await request.json()
+    print("PAYLOAD:", data, flush=True)
+
+    file_url = data.get("url_pdf")
+
+    if not file_url or "{{" in str(file_url):
+        body = {
+            "status": "error",
+            "mensaje": "url_pdf vacío o variable $memory.url_pdf no resuelta en Jelou.",
+            "payload_recibido": data,
+        }
+        print("RESPUESTA A JELOU:", body, flush=True)
+        return JSONResponse(content=body)
+
+    try:
+        pdf_bytes, content_type = descargar_pdf(file_url)
+    except Exception as e:
+        body = {
+            "status": "error",
+            "mensaje": f"No se pudo descargar el PDF: {e}",
+            "url_pdf": file_url,
+        }
+        print("RESPUESTA A JELOU:", body, flush=True)
+        return JSONResponse(content=body)
+
+    print(f"PDF descargado: {len(pdf_bytes)} bytes, content-type={content_type}", flush=True)
+
+    if not pdf_bytes.startswith(b"%PDF"):
+        body = {
+            "status": "error",
+            "mensaje": "La URL no devolvió un PDF válido.",
+            "url_pdf": file_url,
+            "content_type": content_type,
+            "bytes_recibidos": len(pdf_bytes),
+        }
+        print("RESPUESTA A JELOU:", body, flush=True)
+        return JSONResponse(content=body)
+
+    try:
+        print("Enviando PDF inline a Gemini...", flush=True)
+        response = model.generate_content(
+            [
+                {"mime_type": "application/pdf", "data": pdf_bytes},
+                PROMPT_NOTA_CREDITO,
+            ]
+        )
+
+        try:
+            resultado_texto = response.text
+        except Exception:
+            resultado_texto = str(response)
+
+        print("RESULTADO GEMINI:", resultado_texto, flush=True)
+        datos = parsear_json_gemini(resultado_texto)
+
+        body = {
+            "status": "success",
+            "mensaje": "Análisis finalizado correctamente.",
+            "datos": datos,
+            "ruc": datos.get("ruc"),
+            "valor_nominal": datos.get("valor_nominal"),
+            "estado": datos.get("estado"),
+            "url_pdf": file_url,
+            "accion_sugerida": "Revisar datos extraídos y proceder a negociación.",
+        }
+        print("RESPUESTA A JELOU:", body, flush=True)
+        return JSONResponse(content=body)
+
+    except Exception as e:
+        body = {
+            "status": "error",
+            "mensaje": f"Error al analizar el PDF con Gemini: {e}",
+            "url_pdf": file_url,
+        }
+        print("RESPUESTA A JELOU:", body, flush=True)
+        return JSONResponse(content=body)
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
