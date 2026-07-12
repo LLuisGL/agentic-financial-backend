@@ -58,6 +58,9 @@ def parsear_json_gemini(texto: str) -> dict:
 
     return {"ruc": None, "valor_nominal": None, "estado": None, "raw": texto}
 
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
 
 @app.post("/webhook")
 async def procesar_nota(request: Request):
