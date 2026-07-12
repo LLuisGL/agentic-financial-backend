@@ -1,7 +1,9 @@
+from dotenv import load_dotenv
 import google.generativeai as genai
 import os
+load_dotenv()
 
-# Reemplaza con tu API KEY real
+# Lee GENAI_APIKEY del archivo .env (o de la variable de entorno del sistema)
 genai.configure(api_key=os.getenv("GENAI_APIKEY"))
 
 print("--- Modelos disponibles en tu cuenta ---")
