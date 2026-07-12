@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import datetime
 
 from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text
@@ -20,8 +22,8 @@ class Cliente(Base):
     representante_legal: Mapped[str | None] = mapped_column(String(255), nullable=True)
     creado_en: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
 
-    titulos: Mapped[list["Titulo"]] = relationship(back_populates="cliente")
-    casos: Mapped[list["Caso"]] = relationship(back_populates="cliente")
+    titulos: Mapped[list[Titulo]] = relationship(back_populates="cliente")
+    casos: Mapped[list[Caso]] = relationship(back_populates="cliente")
 
 
 class Titulo(Base):
@@ -42,8 +44,8 @@ class Titulo(Base):
     url_documento: Mapped[str | None] = mapped_column(String(500), nullable=True)
     creado_en: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
 
-    cliente: Mapped["Cliente"] = relationship(back_populates="titulos")
-    casos: Mapped[list["Caso"]] = relationship(back_populates="titulo")
+    cliente: Mapped[Cliente] = relationship(back_populates="titulos")
+    casos: Mapped[list[Caso]] = relationship(back_populates="titulo")
 
 
 class Caso(Base):
@@ -61,11 +63,11 @@ class Caso(Base):
     creado_en: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
     actualizado_en: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
-    cliente: Mapped["Cliente"] = relationship(back_populates="casos")
-    titulo: Mapped["Titulo | None"] = relationship(back_populates="casos")
-    eventos: Mapped[list["EventoCaso"]] = relationship(back_populates="caso", order_by="EventoCaso.creado_en")
-    diligencia: Mapped["DebidaDiligencia | None"] = relationship(back_populates="caso", uselist=False)
-    negociaciones: Mapped[list["Negociacion"]] = relationship(back_populates="caso", order_by="Negociacion.creado_en")
+    cliente: Mapped[Cliente] = relationship(back_populates="casos")
+    titulo: Mapped[Titulo | None] = relationship(back_populates="casos")
+    eventos: Mapped[list[EventoCaso]] = relationship(back_populates="caso", order_by="EventoCaso.creado_en")
+    diligencia: Mapped[DebidaDiligencia | None] = relationship(back_populates="caso", uselist=False)
+    negociaciones: Mapped[list[Negociacion]] = relationship(back_populates="caso", order_by="Negociacion.creado_en")
 
 
 class EventoCaso(Base):
@@ -80,7 +82,7 @@ class EventoCaso(Base):
     data_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     creado_en: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
 
-    caso: Mapped["Caso"] = relationship(back_populates="eventos")
+    caso: Mapped[Caso] = relationship(back_populates="eventos")
 
 
 class DebidaDiligencia(Base):
@@ -102,7 +104,7 @@ class DebidaDiligencia(Base):
     pendientes_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     creado_en: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
 
-    caso: Mapped["Caso"] = relationship(back_populates="diligencia")
+    caso: Mapped[Caso] = relationship(back_populates="diligencia")
 
 
 class ListaRiesgo(Base):
@@ -139,4 +141,4 @@ class Negociacion(Base):
     borrador_texto: Mapped[str | None] = mapped_column(Text, nullable=True)
     creado_en: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
 
-    caso: Mapped["Caso"] = relationship(back_populates="negociaciones")
+    caso: Mapped[Caso] = relationship(back_populates="negociaciones")
