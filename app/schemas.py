@@ -55,11 +55,22 @@ class DiligenciaRequest(BaseModel):
 
 
 class PropuestaRequest(BaseModel):
-    precio_negociacion_pct: float
+    # Si se omite, el backend calcula mediana de la tabla BVQ y pide a Gemini el % recomendado.
+    precio_negociacion_pct: float | None = None
     otros_costos: float = 0.0
     vigencia_autorizacion: str | None = None
     instrucciones_especiales: str | None = None
     cuenta_destino: str | None = None
+    precio_minimo_cliente: float | None = None
+    # Si se envía, se usa como base del VE en lugar del valor_nominal del título.
+    monto_negociar: float | None = None
+
+
+class RecomendacionRequest(BaseModel):
+    monto_negociar: float | None = None
+    tipo_nota: str | None = None
+    precio_minimo_cliente: float | None = None
+    otros_costos: float = 0.0
 
 
 class CierreRequest(BaseModel):

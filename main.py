@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from app.database import get_db, init_db
 from app.routers import casos, clientes
 from app.seed_data import seed_if_empty
+from app import mensajes
 
 load_dotenv()
 
@@ -157,10 +158,12 @@ async def procesar_nota(request: Request):
 
         print("RESULTADO GEMINI:", resultado_texto, flush=True)
         datos = parsear_json_gemini(resultado_texto)
+        mensaje_confirmacion = mensajes.mensaje_extraccion(datos)
 
         body = {
             "status": "success",
             "mensaje": "Análisis finalizado correctamente.",
+            "mensaje_confirmacion": mensaje_confirmacion,
             "datos": datos,
             "ruc": datos.get("ruc"),
             "titular": datos.get("titular"),
@@ -170,7 +173,7 @@ async def procesar_nota(request: Request):
             "saldo_disponible": datos.get("saldo_disponible"),
             "estado": datos.get("estado"),
             "url_pdf": file_url,
-            "accion_sugerida": "Revisar/editar los datos extraídos y confirmarlos con POST /clientes/buscar (antecedentes) y luego POST /casos (crear expediente).",
+            "accion_sugerida": "Revisar los datos con el operador y confirmar para crear el expediente.",
         }
         print("RESPUESTA A JELOU:", body, flush=True)
         return JSONResponse(content=body)

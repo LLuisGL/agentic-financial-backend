@@ -1,7 +1,8 @@
 import json
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app import models, negociacion as negociacion_service, schemas, validations
+from app import mensajes
 from app.database import get_db
 from app.serializers import caso_a_dict, negociacion_a_dict
 
@@ -75,7 +76,7 @@ def crear_caso(payload: schemas.CasoCrearRequest, db: Session = Depends(get_db))
         titulo_id=titulo.id if titulo else None,
         operador=payload.operador,
         estado="RECIBIDO",
-        proxima_accion="Ejecutar validaciones (POST /casos/{id}/validar)",
+        proxima_accion="Ejecutar validaciones del expediente",
     )
     db.add(caso)
     db.flush()
@@ -105,7 +106,9 @@ def listar_casos(estado: str | None = None, ruc_cedula: str | None = None, db: S
 
 @router.get("/{caso_id}")
 def obtener_caso(caso_id: int, db: Session = Depends(get_db)):
-    return caso_a_dict(_obtener_caso_o_404(db, caso_id))
+    data = caso_a_dict(_obtener_caso_o_404(db, caso_id))
+    data["mensaje_auditoria"] = mensajes.mensaje_expediente(data)
+    return data
 
 
 @router.post("/{caso_id}/validar")
@@ -114,13 +117,18 @@ def validar_caso(caso_id: int, db: Session = Depends(get_db)):
     caso = _obtener_caso_o_404(db, caso_id)
     resultado = validations.validar_caso(db, caso)
 
-    caso.estado = "EN_VALIDACION" if resultado["pendientes"] else "VALIDADO"
+    # Parcialmente negociada sigue viva aunque haya info de saldo remanente.
+    if resultado.get("estadoNota") == "APROBADO":
+        caso.estado = "VALIDADO"
+    else:
+        caso.estado = "EN_VALIDACION" if resultado["pendientes"] else "VALIDADO"
+
     accion_legible = {
         "SOLICITAR_DOCUMENTO": "Solicitar documento faltante al cliente",
         "ACTUALIZAR_DATO": "Actualizar dato con el operador",
         "ENVIAR_A_CUMPLIMIENTO": "Enviar a cumplimiento para revisión",
         "PREPARAR_ORDEN": "Preparar orden de negociación",
-        "CONTINUAR": "Continuar con negociación (POST /casos/{id}/negociacion/propuesta)",
+        "CONTINUAR": "Continuar con la propuesta económica de negociación",
     }[resultado["siguiente_accion_sugerida"]]
     caso.proxima_accion = accion_legible
 
@@ -167,8 +175,8 @@ def registrar_diligencia(caso_id: int, payload: schemas.DiligenciaRequest, db: S
 
     caso.estado = {"APROBADO": "DILIGENCIA_APROBADA", "PENDIENTE": "PENDIENTE_DOCUMENTO", "RECHAZADO": "RECHAZADO"}[resultado]
     caso.proxima_accion = {
-        "APROBADO": "Continuar con validación de la nota (POST /casos/{id}/validar)",
-        "PENDIENTE": "Falta un documento o actualización; completar checklist KYC",
+        "APROBADO": "Continuar con la validación de la nota",
+        "PENDIENTE": "Completar documentación KYC pendiente",
         "RECHAZADO": "Caso rechazado en debida diligencia; requiere revisión de cumplimiento",
     }[resultado]
 
@@ -178,14 +186,53 @@ def registrar_diligencia(caso_id: int, payload: schemas.DiligenciaRequest, db: S
     return {"caso_id": caso.id, "resultado": resultado, "pendientes": pendientes, "riesgo_detalle": detalle_riesgo}
 
 
+@router.post("/{caso_id}/negociacion/recomendacion")
+def recomendar_precio(
+    caso_id: int,
+    payload: schemas.RecomendacionRequest = Body(default_factory=schemas.RecomendacionRequest),
+    db: Session = Depends(get_db),
+):
+    """HU3: mediana de la tabla referencial BVQ + % recomendado por IA (sin persistir negociación)."""
+    caso = _obtener_caso_o_404(db, caso_id)
+    valor_base = payload.monto_negociar
+    if valor_base is None and caso.titulo is not None:
+        valor_base = caso.titulo.saldo_disponible if caso.titulo.saldo_disponible is not None else caso.titulo.valor_nominal
+    tipo_nota = payload.tipo_nota or (caso.titulo.tipo_nota if caso.titulo else None)
+
+    recomendacion = negociacion_service.construir_recomendacion_propuesta(
+        valor_base=valor_base,
+        tipo_nota=tipo_nota,
+        precio_minimo_cliente=payload.precio_minimo_cliente,
+        otros_costos=payload.otros_costos,
+    )
+    _registrar_evento(db, caso, "RECOMENDACION_PRECIO", "Se generó recomendación de precio (HITL).", recomendacion)
+    db.commit()
+    return {"caso_id": caso.id, **recomendacion}
+
+
 @router.post("/{caso_id}/negociacion/propuesta")
 def crear_propuesta(caso_id: int, payload: schemas.PropuestaRequest, db: Session = Depends(get_db)):
-    """HU3: calcula la propuesta económica y genera un borrador para revisión del operador."""
+    """HU3: calcula VE/Vneto y genera borrador. Si no hay precio, usa mediana+IA."""
     caso = _obtener_caso_o_404(db, caso_id)
     if caso.titulo is None:
         raise HTTPException(status_code=409, detail="El caso no tiene un título/nota de crédito asociado.")
 
-    calculo = negociacion_service.calcular_propuesta(caso.titulo.valor_nominal, payload.precio_negociacion_pct, payload.otros_costos)
+    valor_base = payload.monto_negociar
+    if valor_base is None:
+        valor_base = caso.titulo.saldo_disponible if caso.titulo.saldo_disponible is not None else caso.titulo.valor_nominal
+
+    recomendacion = None
+    precio = payload.precio_negociacion_pct
+    if precio is None:
+        recomendacion = negociacion_service.construir_recomendacion_propuesta(
+            valor_base=valor_base,
+            tipo_nota=caso.titulo.tipo_nota,
+            precio_minimo_cliente=payload.precio_minimo_cliente,
+            otros_costos=payload.otros_costos,
+        )
+        precio = float(recomendacion["porcentaje_recomendado"])
+
+    calculo = negociacion_service.calcular_propuesta(valor_base, precio, payload.otros_costos)
 
     negociacion = models.Negociacion(
         caso_id=caso.id,
@@ -198,16 +245,38 @@ def crear_propuesta(caso_id: int, payload: schemas.PropuestaRequest, db: Session
     db.add(negociacion)
     db.flush()
 
-    negociacion.borrador_texto = negociacion_service.generar_borrador(caso, caso.cliente, caso.titulo, negociacion)
+    negociacion.borrador_texto = negociacion_service.generar_borrador(
+        caso, caso.cliente, caso.titulo, negociacion, recomendacion=recomendacion
+    )
+
+    # Saldo remanente estimado tras esta propuesta (informativo; no se debitará sin aprobación).
+    try:
+        saldo_actual = float(caso.titulo.saldo_disponible)
+        saldo_post = max(0.0, round(saldo_actual - float(valor_base), 2))
+    except (TypeError, ValueError):
+        saldo_post = None
 
     caso.estado = "EN_NEGOCIACION"
-    caso.proxima_accion = "Revisar y aprobar el borrador de negociación (POST /casos/{id}/negociacion/{negociacion_id}/aprobar)"
+    caso.proxima_accion = "Revisar y aprobar el borrador de negociación con el operador"
 
-    _registrar_evento(db, caso, "PROPUESTA", "Propuesta económica generada.", calculo)
+    evento_data = {"calculo": calculo, "recomendacion": recomendacion, "saldo_remanente_post": saldo_post}
+    _registrar_evento(db, caso, "PROPUESTA", "Propuesta económica generada.", evento_data)
     db.commit()
     db.refresh(negociacion)
 
-    return negociacion_a_dict(negociacion)
+    body = negociacion_a_dict(negociacion)
+    body["saldo_remanente_post"] = saldo_post
+    body["mensaje_propuesta"] = negociacion.borrador_texto
+    body["vneto"] = negociacion.valor_neto
+    body["comision"] = round((negociacion.comision_bolsa or 0) + (negociacion.comision_casa or 0), 2)
+    if recomendacion is not None:
+        body["recomendacion"] = {
+            "mediana": recomendacion["mediana"],
+            "porcentaje_recomendado": recomendacion["porcentaje_recomendado"],
+            "justificacion": recomendacion["justificacion"],
+            "fuente": recomendacion["fuente"],
+        }
+    return body
 
 
 @router.post("/{caso_id}/negociacion/{negociacion_id}/aprobar")
@@ -219,12 +288,17 @@ def aprobar_negociacion(caso_id: int, negociacion_id: int, db: Session = Depends
 
     negociacion.estado = "APROBADA_OPERADOR"
     caso.estado = "NEGOCIACION_APROBADA"
-    caso.proxima_accion = "Solicitar cierre (POST /casos/{id}/cierre) con aprobación humana para liquidación/transferencia/endoso"
+    caso.proxima_accion = "Registrar el cierre de la operación con aprobación humana (sin liquidación automática)"
 
     _registrar_evento(db, caso, "APROBACION", f"Operador aprobó la negociación #{negociacion.id}.")
     db.commit()
 
-    return {"caso_id": caso.id, "negociacion_id": negociacion.id, "estado": negociacion.estado}
+    return {
+        "caso_id": caso.id,
+        "negociacion_id": negociacion.id,
+        "estado": negociacion.estado,
+        "mensaje": "Propuesta aprobada por el operador. Pendiente registrar el cierre humano.",
+    }
 
 
 @router.post("/{caso_id}/cierre")
@@ -235,7 +309,7 @@ def solicitar_cierre(caso_id: int, payload: schemas.CierreRequest, db: Session =
         raise HTTPException(status_code=400, detail=f"accion debe ser una de: {sorted(ACCIONES_CIERRE_VALIDAS)}")
 
     caso.estado = "PENDIENTE_APROBACION_CIERRE"
-    caso.proxima_accion = f"Solicitud de aprobación humana para ejecutar {payload.accion}. No se ejecuta automáticamente."
+    caso.proxima_accion = "Pendiente de aprobación humana para cierre. No se ejecuta liquidación ni endoso automáticamente."
     if payload.observaciones:
         caso.observaciones = payload.observaciones
 
@@ -252,5 +326,9 @@ def solicitar_cierre(caso_id: int, payload: schemas.CierreRequest, db: Session =
         "caso_id": caso.id,
         "estado": caso.estado,
         "accion_solicitada": payload.accion,
-        "mensaje": "Queda registrada como propuesta/solicitud de aprobación. No se ejecuta en producción.",
+        "mensaje": (
+            "🔒 Guardia de Seguridad: Esta propuesta es preparatoria. "
+            "El sistema no ejecuta liquidaciones ni endosos automáticamente. "
+            "Queda registrada la solicitud de cierre para aprobación humana."
+        ),
     }

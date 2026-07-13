@@ -60,11 +60,20 @@ def seed_if_empty(db: Session) -> None:
         tipo_nota="NCE",
         valor_nominal=25000.0,
         saldo_disponible=18000.0,
-        estado="VIGENTE",
+        estado="PARCIALMENTE_NEGOCIADA",
         fecha_emision=datetime.date(2024, 1, 20),
         tiene_restriccion=True,
     )
-    db.add_all([titulo1, titulo2, titulo3])
+    titulo4 = models.Titulo(
+        cliente_id=cliente1.id,
+        numero_titulo="NCD-2024-000500",
+        tipo_nota="NCD",
+        valor_nominal=8000.0,
+        saldo_disponible=3500.0,
+        estado="PARCIALMENTE_NEGOCIADA",
+        fecha_emision=datetime.date(2024, 6, 1),
+    )
+    db.add_all([titulo1, titulo2, titulo3, titulo4])
     db.flush()
 
     caso_previo = models.Caso(
