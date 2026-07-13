@@ -197,5 +197,7 @@ def validar_caso(db: Session, caso: models.Caso) -> dict:
         "siguienteAccion": ui.get("siguienteAccion") or "",
         "mensaje_operador": ui["mensaje_operador"],
         "saldo_remanente": ui.get("saldo_remanente"),
+        "valor_nominal": ui.get("valor_nominal"),
+        "pregunta_monto": ui.get("pregunta_monto"),
         "pregunta_porcentaje": ui.get("pregunta_porcentaje"),
     }

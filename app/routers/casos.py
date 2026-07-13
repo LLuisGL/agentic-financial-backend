@@ -66,10 +66,20 @@ def crear_caso(payload: schemas.CasoCrearRequest, db: Session = Depends(get_db))
                 tipo_nota=payload.tipo_nota or "NCD",
                 valor_nominal=payload.valor_nominal or 0.0,
                 saldo_disponible=payload.saldo_disponible if payload.saldo_disponible is not None else (payload.valor_nominal or 0.0),
+                fecha_emision=payload.fecha_emision,
                 url_documento=payload.url_documento,
             )
             db.add(titulo)
             db.flush()
+        else:
+            if payload.fecha_emision and permitido("fecha_emision"):
+                titulo.fecha_emision = payload.fecha_emision
+            if payload.tipo_nota and permitido("tipo_nota"):
+                titulo.tipo_nota = payload.tipo_nota
+            if payload.valor_nominal is not None and permitido("valor_nominal"):
+                titulo.valor_nominal = payload.valor_nominal
+            if payload.saldo_disponible is not None and permitido("saldo_disponible"):
+                titulo.saldo_disponible = payload.saldo_disponible
 
     caso = models.Caso(
         cliente_id=cliente.id,
@@ -212,7 +222,7 @@ def recomendar_precio(
 
 @router.post("/{caso_id}/negociacion/propuesta")
 def crear_propuesta(caso_id: int, payload: schemas.PropuestaRequest, db: Session = Depends(get_db)):
-    """HU3: calcula VE/Vneto y genera borrador. Si no hay precio, usa mediana+IA."""
+    """HU3: calcula VE/Vneto y genera borrador. Exige % del operador (nunca asume 96% ni otro default)."""
     caso = _obtener_caso_o_404(db, caso_id)
     if caso.titulo is None:
         raise HTTPException(status_code=409, detail="El caso no tiene un título/nota de crédito asociado.")
@@ -221,18 +231,31 @@ def crear_propuesta(caso_id: int, payload: schemas.PropuestaRequest, db: Session
     if valor_base is None:
         valor_base = caso.titulo.saldo_disponible if caso.titulo.saldo_disponible is not None else caso.titulo.valor_nominal
 
-    recomendacion = None
     precio = payload.precio_negociacion_pct
     if precio is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "mensaje": mensajes.PREGUNTA_PORCENTAJE,
+                "pregunta_porcentaje": mensajes.PREGUNTA_PORCENTAJE,
+                "hint": (
+                    "Indique precio_negociacion_pct con el porcentaje confirmado por el operador. "
+                    "No se asume 96% ni ningún otro valor por defecto. "
+                    "Puede consultar /negociacion/recomendacion solo como referencia."
+                ),
+            },
+        )
+
+    recomendacion = None
+    if payload.incluir_recomendacion:
         recomendacion = negociacion_service.construir_recomendacion_propuesta(
             valor_base=valor_base,
             tipo_nota=caso.titulo.tipo_nota,
             precio_minimo_cliente=payload.precio_minimo_cliente,
             otros_costos=payload.otros_costos,
         )
-        precio = float(recomendacion["porcentaje_recomendado"])
 
-    calculo = negociacion_service.calcular_propuesta(valor_base, precio, payload.otros_costos)
+    calculo = negociacion_service.calcular_propuesta(valor_base, float(precio), payload.otros_costos)
 
     negociacion = models.Negociacion(
         caso_id=caso.id,
@@ -245,16 +268,21 @@ def crear_propuesta(caso_id: int, payload: schemas.PropuestaRequest, db: Session
     db.add(negociacion)
     db.flush()
 
-    negociacion.borrador_texto = negociacion_service.generar_borrador(
-        caso, caso.cliente, caso.titulo, negociacion, recomendacion=recomendacion
-    )
-
     # Saldo remanente estimado tras esta propuesta (informativo; no se debitará sin aprobación).
     try:
         saldo_actual = float(caso.titulo.saldo_disponible)
         saldo_post = max(0.0, round(saldo_actual - float(valor_base), 2))
     except (TypeError, ValueError):
         saldo_post = None
+
+    ticket_payload = {**calculo, "saldo_remanente_post": saldo_post}
+    negociacion.borrador_texto = mensajes.mensaje_propuesta_ticket(
+        negociacion=ticket_payload,
+        titular=caso.cliente.razon_social if caso.cliente else None,
+        ruc=caso.cliente.ruc_cedula if caso.cliente else None,
+        codigo_nota=caso.titulo.numero_titulo if caso.titulo else None,
+        recomendacion=recomendacion,
+    )
 
     caso.estado = "EN_NEGOCIACION"
     caso.proxima_accion = "Revisar y aprobar el borrador de negociación con el operador"
@@ -269,6 +297,8 @@ def crear_propuesta(caso_id: int, payload: schemas.PropuestaRequest, db: Session
     body["mensaje_propuesta"] = negociacion.borrador_texto
     body["vneto"] = negociacion.valor_neto
     body["comision"] = round((negociacion.comision_bolsa or 0) + (negociacion.comision_casa or 0), 2)
+    body["pregunta_porcentaje"] = mensajes.PREGUNTA_PORCENTAJE
+    body["guardrail"] = mensajes.GUARDRAIL_CIERRE
     if recomendacion is not None:
         body["recomendacion"] = {
             "mediana": recomendacion["mediana"],
@@ -297,7 +327,15 @@ def aprobar_negociacion(caso_id: int, negociacion_id: int, db: Session = Depends
         "caso_id": caso.id,
         "negociacion_id": negociacion.id,
         "estado": negociacion.estado,
-        "mensaje": "Propuesta aprobada por el operador. Pendiente registrar el cierre humano.",
+        "mensaje": (
+            "Propuesta aprobada por el operador. "
+            "Pendiente registrar el cierre humano (sin liquidación automática en DECEVALE)."
+        ),
+        "mensaje_operador": (
+            "Propuesta aprobada. Cuando registre el cierre del expediente, "
+            "el sistema le preguntará si desea procesar una nueva nota."
+        ),
+        "guardrail": mensajes.GUARDRAIL_CIERRE,
     }
 
 
@@ -326,9 +364,7 @@ def solicitar_cierre(caso_id: int, payload: schemas.CierreRequest, db: Session =
         "caso_id": caso.id,
         "estado": caso.estado,
         "accion_solicitada": payload.accion,
-        "mensaje": (
-            "🔒 Guardia de Seguridad: Esta propuesta es preparatoria. "
-            "El sistema no ejecuta liquidaciones ni endosos automáticamente. "
-            "Queda registrada la solicitud de cierre para aprobación humana."
-        ),
+        "mensaje": mensajes.GUARDRAIL_CIERRE,
+        "mensaje_operador": mensajes.mensaje_cierre_registrado(),
+        "continuar": True,
     }
