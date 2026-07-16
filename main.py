@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from app.database import get_db, init_db
 from app.routers import casos, clientes
 from app.seed_data import seed_if_empty
+from app import mensajes
 
 load_dotenv()
 
@@ -41,16 +42,18 @@ Eres un extractor de datos de notas de crédito tributarias (Ecuador / Latinoam�
 Analiza el PDF adjunto y extrae SOLO estos campos:
 - ruc: número de RUC o cédula del titular (solo dígitos, sin guiones ni espacios).
 - titular: nombre o razón social del titular de la nota.
-- numero_titulo: número del título o de la nota de crédito, si aparece.
+- numero_titulo: número/código del título o de la nota de crédito, si aparece (ej. ISD-2019-000011).
 - tipo_nota: tipo de nota si se puede inferir (NCD = Nota de Crédito Desmaterializada, ISD, NCE = Nota de Crédito de Excepción). Si no es claro, usa null.
 - valor_nominal: monto principal / valor nominal / total de la nota (número decimal, sin símbolo de moneda ni separadores de miles; usa punto como decimal).
 - saldo_disponible: saldo disponible de la nota si aparece explícito; si no, usa el mismo valor_nominal.
+- fecha_emision: fecha real de emisión del documento en formato AAAA-MM-DD. NO uses el año del código de la nota (ej. en "ISD-2019-000011" el 2019 NO es automáticamente la fecha de emisión). Busca la fecha impresa en el PDF. Si no la encuentras con certeza, usa null.
 - estado: estado del documento si aparece (ej. ACTIVO, ANULADO, PAGADO, PENDIENTE, VIGENTE). Si no hay estado explícito, usa null.
 
 Reglas:
 1. Responde ÚNICAMENTE con un JSON válido, sin markdown ni texto extra.
 2. Si un campo no se puede leer con certeza, usa null.
 3. No inventes datos.
+4. Nunca confundas el año del código de la nota con la fecha de emisión.
 
 Formato exacto:
 {
@@ -60,6 +63,7 @@ Formato exacto:
   "tipo_nota": "NCD",
   "valor_nominal": 1500.50,
   "saldo_disponible": 1500.50,
+  "fecha_emision": "2019-04-15",
   "estado": "ACTIVO"
 }
 """
@@ -93,6 +97,7 @@ def parsear_json_gemini(texto: str) -> dict:
         "tipo_nota": None,
         "valor_nominal": None,
         "saldo_disponible": None,
+        "fecha_emision": None,
         "estado": None,
         "raw": texto,
     }
@@ -100,6 +105,20 @@ def parsear_json_gemini(texto: str) -> dict:
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+
+@app.post("/formatear/datos")
+async def formatear_datos_corregidos(request: Request):
+    """REGLA 3: reimprime la lista completa tras una corrección en vivo del operador."""
+    data = await request.json()
+    datos = data.get("datos") if isinstance(data.get("datos"), dict) else data
+    return {
+        "status": "success",
+        "mensaje_confirmacion": mensajes.mensaje_datos_actualizados(datos),
+        "datos": datos,
+        "pregunta_confirmacion": mensajes.PREGUNTA_CONFIRMACION_EXTRACCION,
+    }
+
 
 @app.post("/webhook")
 async def procesar_nota(request: Request):
@@ -157,10 +176,12 @@ async def procesar_nota(request: Request):
 
         print("RESULTADO GEMINI:", resultado_texto, flush=True)
         datos = parsear_json_gemini(resultado_texto)
+        mensaje_confirmacion = mensajes.mensaje_extraccion(datos)
 
         body = {
             "status": "success",
             "mensaje": "Análisis finalizado correctamente.",
+            "mensaje_confirmacion": mensaje_confirmacion,
             "datos": datos,
             "ruc": datos.get("ruc"),
             "titular": datos.get("titular"),
@@ -168,9 +189,11 @@ async def procesar_nota(request: Request):
             "tipo_nota": datos.get("tipo_nota"),
             "valor_nominal": datos.get("valor_nominal"),
             "saldo_disponible": datos.get("saldo_disponible"),
+            "fecha_emision": datos.get("fecha_emision"),
             "estado": datos.get("estado"),
             "url_pdf": file_url,
-            "accion_sugerida": "Revisar/editar los datos extraídos y confirmarlos con POST /clientes/buscar (antecedentes) y luego POST /casos (crear expediente).",
+            "accion_sugerida": "Revisar los datos con el operador y confirmar para crear el expediente.",
+            "pregunta_confirmacion": mensajes.PREGUNTA_CONFIRMACION_EXTRACCION,
         }
         print("RESPUESTA A JELOU:", body, flush=True)
         return JSONResponse(content=body)
