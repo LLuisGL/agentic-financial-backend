@@ -25,6 +25,6 @@ def get_db():
 
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    from app import models  # noqa: F401  (registra los modelos en Base.metadata)
+    from app.db import models  # noqa: F401  (registra los modelos en Base.metadata)
 
     Base.metadata.create_all(bind=engine)

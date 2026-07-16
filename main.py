@@ -9,9 +9,9 @@ from urllib.request import Request as UrlRequest, urlopen
 
 from dotenv import load_dotenv
 
-from app.database import get_db, init_db
+from app.db.database import get_db, init_db
 from app.routers import casos, clientes
-from app.seed_data import seed_if_empty
+from app.db.seeder import seed_if_empty
 from app import mensajes
 
 load_dotenv()
