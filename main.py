@@ -102,6 +102,17 @@ def parsear_json_gemini(texto: str) -> dict:
         "raw": texto,
     }
 
+
+async def leer_json_seguro(request: Request) -> dict:
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        data = None
+    except ValueError:
+        data = None
+
+    return data if isinstance(data, dict) else {}
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
@@ -110,7 +121,7 @@ async def health_check():
 @app.post("/formatear/datos")
 async def formatear_datos_corregidos(request: Request):
     """REGLA 3: reimprime la lista completa tras una corrección en vivo del operador."""
-    data = await request.json()
+    data = await leer_json_seguro(request)
     datos = data.get("datos") if isinstance(data.get("datos"), dict) else data
     return {
         "status": "success",
@@ -122,7 +133,7 @@ async def formatear_datos_corregidos(request: Request):
 
 @app.post("/webhook")
 async def procesar_nota(request: Request):
-    data = await request.json()
+    data = await leer_json_seguro(request)
     print("PAYLOAD:", data, flush=True)
 
     file_url = data.get("url_pdf")
