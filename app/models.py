@@ -142,3 +142,20 @@ class Negociacion(Base):
     creado_en: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
 
     caso: Mapped[Caso] = relationship(back_populates="negociaciones")
+
+
+class Transaccion(Base):
+    """Registro histórico de transacciones/retiros sobre un título."""
+
+    __tablename__ = "transacciones"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cliente_id: Mapped[int] = mapped_column(ForeignKey("clientes.id"))
+    titulo_id: Mapped[int] = mapped_column(ForeignKey("titulos.id"), nullable=True)
+    caso_id: Mapped[int] = mapped_column(ForeignKey("casos.id"), nullable=True)
+    negociacion_id: Mapped[int] = mapped_column(ForeignKey("negociaciones.id"), nullable=True)
+    ruc_cedula: Mapped[str] = mapped_column(String(20), index=True)
+    monto_retirado: Mapped[float] = mapped_column(Float)
+    saldo_restante: Mapped[float] = mapped_column(Float)
+    tipo: Mapped[str] = mapped_column(String(50), default="RETIRO")
+    fecha: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)

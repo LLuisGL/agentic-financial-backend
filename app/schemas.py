@@ -55,7 +55,8 @@ class DiligenciaRequest(BaseModel):
 
 
 class PropuestaRequest(BaseModel):
-    precio_negociacion_pct: float
+    precio_negociacion_pct: float | None = None
+    monto_a_retirar: float | None = None
     otros_costos: float = 0.0
     vigencia_autorizacion: str | None = None
     instrucciones_especiales: str | None = None

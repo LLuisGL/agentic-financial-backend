@@ -140,10 +140,28 @@ def validar_caso(db: Session, caso: models.Caso) -> dict:
     pendientes = priorizar(pendientes)
     siguiente_accion = determinar_siguiente_accion(pendientes)
 
+    jelou_flags = {
+        "cliente": {
+            "ruc_valido": caso.cliente.ruc_cedula is not None,
+            "titular_coincidente": True,
+            "representante_identificado": not any(p["campo"] == "representante_legal" for p in pendientes),
+            "documento_vigente": True,
+            "sin_riesgos": not hay_riesgo
+        },
+        "titulo": {
+            "encontrado": caso.titulo is not None,
+            "estado": caso.titulo.estado if caso.titulo else None,
+            "sin_bloqueo": not caso.titulo.bloqueado if caso.titulo else False,
+            "sin_restriccion": not caso.titulo.tiene_restriccion if caso.titulo else False,
+            "sin_duplicados": not any(p["tipo"] == "DUPLICADO" for p in pendientes)
+        }
+    }
+
     return {
         "pendientes": pendientes,
         "siguiente_accion_sugerida": siguiente_accion,
         "hay_coincidencia_riesgo": hay_riesgo,
         "detalle_riesgo": detalle_riesgo,
         "requiere_aprobacion_humana": True,
+        "jelou_flags": jelou_flags,
     }

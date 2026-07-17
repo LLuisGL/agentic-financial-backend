@@ -14,6 +14,24 @@ COMISION_BOLSA_PCT = 0.0009  # 0.09%
 COMISION_CASA_PCT = 0.005  # 0.5%
 
 
+def simular_precio_referencial(tipo_nota: str) -> dict:
+    """Simula el cálculo del precio referencial basado en mercado e interno."""
+    # En un caso real, esto consultaría a la BD por transacciones pasadas
+    precio_interno = 98.10
+    precio_mercado = 98.20
+    ponderacion_interna = 0.40
+    ponderacion_mercado = 0.60
+    
+    precio_sugerido = (precio_interno * ponderacion_interna) + (precio_mercado * ponderacion_mercado)
+    
+    return {
+        "precio_interno": precio_interno,
+        "precio_mercado": precio_mercado,
+        "precio_sugerido": round(precio_sugerido, 2),
+        "ponderacion_texto": f"{int(ponderacion_interna * 100)} % precio interno + {int(ponderacion_mercado * 100)} % precio de mercado."
+    }
+
+
 def calcular_propuesta(valor_nominal: float, precio_negociacion_pct: float, otros_costos: float = 0.0) -> dict:
     valor_efectivo = valor_nominal * precio_negociacion_pct / 100
     descuento = valor_nominal - valor_efectivo

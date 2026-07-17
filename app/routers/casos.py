@@ -185,7 +185,18 @@ def crear_propuesta(caso_id: int, payload: schemas.PropuestaRequest, db: Session
     if caso.titulo is None:
         raise HTTPException(status_code=409, detail="El caso no tiene un título/nota de crédito asociado.")
 
-    calculo = negociacion_service.calcular_propuesta(caso.titulo.valor_nominal, payload.precio_negociacion_pct, payload.otros_costos)
+    monto_base = payload.monto_a_retirar if payload.monto_a_retirar is not None else caso.titulo.saldo_disponible
+    if monto_base > caso.titulo.saldo_disponible:
+        raise HTTPException(status_code=400, detail="El monto a retirar excede el saldo disponible del título.")
+
+    precio_ref_detalle = None
+    if payload.precio_negociacion_pct is None:
+        precio_ref_detalle = negociacion_service.simular_precio_referencial(caso.titulo.tipo_nota)
+        precio_pct = precio_ref_detalle["precio_sugerido"]
+    else:
+        precio_pct = payload.precio_negociacion_pct
+
+    calculo = negociacion_service.calcular_propuesta(monto_base, precio_pct, payload.otros_costos)
 
     negociacion = models.Negociacion(
         caso_id=caso.id,
@@ -207,7 +218,12 @@ def crear_propuesta(caso_id: int, payload: schemas.PropuestaRequest, db: Session
     db.commit()
     db.refresh(negociacion)
 
-    return negociacion_a_dict(negociacion)
+    resultado = negociacion_a_dict(negociacion)
+    resultado["saldo_restante_proyectado"] = caso.titulo.saldo_disponible - monto_base
+    if precio_ref_detalle:
+        resultado["detalle_precio_referencial"] = precio_ref_detalle
+
+    return resultado
 
 
 @router.post("/{caso_id}/negociacion/{negociacion_id}/aprobar")
@@ -216,6 +232,23 @@ def aprobar_negociacion(caso_id: int, negociacion_id: int, db: Session = Depends
     negociacion = db.get(models.Negociacion, negociacion_id)
     if negociacion is None or negociacion.caso_id != caso.id:
         raise HTTPException(status_code=404, detail="Negociación no encontrada para este caso.")
+
+    if negociacion.valor_nominal > caso.titulo.saldo_disponible:
+        raise HTTPException(status_code=400, detail="Saldo insuficiente en el título para aprobar esta negociación.")
+
+    caso.titulo.saldo_disponible -= negociacion.valor_nominal
+
+    transaccion = models.Transaccion(
+        cliente_id=caso.cliente_id,
+        titulo_id=caso.titulo_id,
+        caso_id=caso.id,
+        negociacion_id=negociacion.id,
+        ruc_cedula=caso.cliente.ruc_cedula,
+        monto_retirado=negociacion.valor_nominal,
+        saldo_restante=caso.titulo.saldo_disponible,
+        tipo="RETIRO_NEGOCIACION"
+    )
+    db.add(transaccion)
 
     negociacion.estado = "APROBADA_OPERADOR"
     caso.estado = "NEGOCIACION_APROBADA"
