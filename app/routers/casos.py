@@ -81,23 +81,50 @@ def crear_caso(payload: schemas.CasoCrearRequest, db: Session = Depends(get_db))
             if payload.saldo_disponible is not None and permitido("saldo_disponible"):
                 titulo.saldo_disponible = payload.saldo_disponible
 
-    caso = models.Caso(
-        cliente_id=cliente.id,
-        titulo_id=titulo.id if titulo else None,
-        operador=payload.operador,
-        estado="RECIBIDO",
-        proxima_accion="Ejecutar validaciones del expediente",
-    )
-    db.add(caso)
-    db.flush()
+    # Reutilizar trámite abierto del mismo título (evita #4/#5/#6 duplicados).
+    caso = None
+    if titulo is not None:
+        caso = (
+            db.query(models.Caso)
+            .filter(
+                models.Caso.titulo_id == titulo.id,
+                models.Caso.estado.notin_(["CERRADO", "RECHAZADO"]),
+            )
+            .order_by(models.Caso.creado_en.desc())
+            .first()
+        )
 
-    _registrar_evento(
-        db,
-        caso,
-        "DATO_CONFIRMADO",
-        "Expediente creado a partir de datos confirmados/editados por el operador.",
-        {"campos_recibidos": [c.model_dump() for c in payload.campos]},
-    )
+    if caso is None:
+        caso = models.Caso(
+            cliente_id=cliente.id,
+            titulo_id=titulo.id if titulo else None,
+            operador=payload.operador,
+            estado="RECIBIDO",
+            proxima_accion="Ejecutar validaciones del expediente",
+        )
+        db.add(caso)
+        db.flush()
+        _registrar_evento(
+            db,
+            caso,
+            "DATO_CONFIRMADO",
+            "Expediente creado a partir de datos confirmados/editados por el operador.",
+            {"campos_recibidos": [c.model_dump() for c in payload.campos]},
+        )
+    else:
+        caso.cliente_id = cliente.id
+        caso.operador = payload.operador or caso.operador
+        if titulo is not None:
+            caso.titulo_id = titulo.id
+        if caso.estado in ("CERRADO", "RECHAZADO"):
+            caso.estado = "RECIBIDO"
+        _registrar_evento(
+            db,
+            caso,
+            "DATO_CONFIRMADO",
+            "Expediente reutilizado (mismo título, trámite aún abierto).",
+            {"campos_recibidos": [c.model_dump() for c in payload.campos]},
+        )
 
     db.commit()
     db.refresh(caso)

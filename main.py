@@ -5,12 +5,13 @@ import google.generativeai as genai
 import json
 import re
 import os
+import uuid
 from urllib.request import Request as UrlRequest, urlopen
 
 from dotenv import load_dotenv
 
 from app.database import get_db, init_db
-from app.routers import casos, clientes
+from app.routers import casos, clientes, legacy
 from app.seed_data import seed_if_empty
 from app import mensajes
 
@@ -20,6 +21,7 @@ app = FastAPI()
 
 app.include_router(clientes.router)
 app.include_router(casos.router)
+app.include_router(legacy.router)
 
 
 @app.on_event("startup")
@@ -27,6 +29,7 @@ def on_startup():
     init_db()
     db = next(get_db())
     try:
+        # Asegura títulos/clientes de los PDFs de prueba en cada arranque.
         seed_if_empty(db)
     finally:
         db.close()
@@ -178,9 +181,11 @@ async def procesar_nota(request: Request):
         datos = parsear_json_gemini(resultado_texto)
         mensaje_confirmacion = mensajes.mensaje_extraccion(datos)
 
+        analisis_id = str(uuid.uuid4())
         body = {
             "status": "success",
             "mensaje": "Análisis finalizado correctamente.",
+            "analisis_id": analisis_id,
             "mensaje_confirmacion": mensaje_confirmacion,
             "datos": datos,
             "ruc": datos.get("ruc"),
@@ -206,6 +211,10 @@ async def procesar_nota(request: Request):
         }
         print("RESPUESTA A JELOU:", body, flush=True)
         return JSONResponse(content=body)
+
+
+# Alias v1: las skills históricas llaman /extraer
+app.add_api_route("/extraer", procesar_nota, methods=["POST"])
 
 
 if __name__ == "__main__":
